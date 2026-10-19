@@ -435,32 +435,25 @@ public class SimulationController {
     }
 
     private List<Candidate> scoreCandidates(Node origin) {
-        List<Candidate> candidates = new ArrayList<>();
+        return stations().stream()
+                .filter(station -> station != origin)
+                .map(station -> {
+                    Route route = router.findRoute(origin, station);
+                    if (route == null) {
+                        return null;
+                    }
+                    double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
 
-        for (Station station : stations()) {
-            if (station == origin) {
-                continue;
-            }
-            /*
-             * Routing every candidate up front both supplies the length for the tiebreak and drops
-             * anything in another component, which is what a partially connected network needs.
-             * A handful of A* runs once per dwell is not worth optimising.
-             */
-            Route route = router.findRoute(origin, station);
-            if (route == null) {
-                continue;
-            }
-            double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
-            candidates.add(new Candidate(
-                    station,
-                    route,
-                    demandFor(origin, station),
-                    station.getCargoHold().getUsedUnits(),
-                    staleness,
-                    staleness > STARVATION_SECONDS));
-        }
-
-        return candidates;
+                    return new Candidate(
+                        station,
+                        route,
+                        demandFor(origin, station),
+                        station.getCargoHold().getUsedUnits(),
+                        staleness,
+                        staleness > STARVATION_SECONDS);
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     /**
