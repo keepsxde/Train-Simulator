@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.stream.Collectors;
 
 public class SimulationController {
     // Decides when the simulation runs
@@ -484,26 +485,19 @@ public class SimulationController {
     }
 
     private List<Station> stations() {
-        List<Station> stations = new ArrayList<>();
-        for (Node node : sim.getNetwork().getNodes().values()) {
-            if (node instanceof Station station) {
-                stations.add(station);
-            }
-        }
-        return stations;
+        return sim.getNetwork().getNodes().values().stream()
+                    .filter(Station.class::isInstance)
+                    .map(Station.class::cast)
+                    .collect(Collectors.toCollection(ArrayList::new));
     }
 
     /**
      * @return the stations that have at least one pathway, so are worth considering at all
      */
     private List<Station> connectedStations() {
-        List<Station> stations = new ArrayList<>();
-        for (Station station : stations()) {
-            if (!station.getConnections().isEmpty()) {
-                stations.add(station);
-            }
-        }
-        return stations;
+        return stations().stream()
+                .filter(station -> !station.getConnections().isEmpty())
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     public boolean spawnVehicle() {
