@@ -456,6 +456,8 @@ public class SimulationController {
                 .collect(Collectors.toCollection(ArrayList::new));
     }
 
+    
+
     /**
      * How much cargo waiting where the vehicle is now is trying to reach the given station.
      * <p>
