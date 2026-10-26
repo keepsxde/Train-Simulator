@@ -427,19 +427,12 @@ public class SimulationController {
     }
 
     private List<Candidate> scoreCandidates(Node origin) {
-        /*
-         * Routing every candidate up front both supplies the length for the tiebreak and drops
-         * anything in another component, which is what a partially connected network needs.
-         * A handful of A* runs once per dwell is not worth optimising.
-         *
-         * Collected into an ArrayList on purpose: redispatch shuffles and sorts the result in place.
-         */
         return stations().stream()
                 .filter(station -> station != origin)
                 .map(station -> {
                     Route route = router.findRoute(origin, station);
                     if (route == null) {
-                        return null; // other component, so nothing can travel there
+                        return null;
                     }
                     double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
                     return new Candidate(
