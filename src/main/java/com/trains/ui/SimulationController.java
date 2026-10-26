@@ -427,7 +427,7 @@ public class SimulationController {
     }
 
     private List<Candidate> scoreCandidates(Node origin) {
-        return stations().stream()
+        return stations().parallelStream()
                 .filter(station -> station != origin)
                 .map(station -> {
                     Route route = router.findRoute(origin, station);
