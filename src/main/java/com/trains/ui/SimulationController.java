@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.stream.Collectors;
 
 public class SimulationController {
     // Decides when the simulation runs
@@ -240,24 +241,16 @@ public class SimulationController {
      * @return the total cargo units waiting across every station
      */
     public int getWaitingUnits() {
-        int waiting = 0;
-        for (Node node : sim.getNetwork().getNodes().values()) {
-            if (node instanceof Station station) {
-                waiting += station.getCargoHold().getUsedUnits();
-            }
-        }
-        return waiting;
+        return stations().stream()
+                .collect(Collectors.summingInt(station -> station.getCargoHold().getUsedUnits()));
     }
 
     /**
      * @return the total cargo units currently aboard vehicles
      */
     public int getOnboardUnits() {
-        int onboard = 0;
-        for (Vehicle vehicle : sim.getVehicles()) {
-            onboard += vehicle.getCargoHold().getUsedUnits();
-        }
-        return onboard;
+        return sim.getVehicles().stream()
+                .collect(Collectors.summingInt(vehicle -> vehicle.getCargoHold().getUsedUnits()));
     }
 
     private void pulse(long now) {
@@ -434,32 +427,31 @@ public class SimulationController {
     }
 
     private List<Candidate> scoreCandidates(Node origin) {
-        List<Candidate> candidates = new ArrayList<>();
-
-        for (Station station : stations()) {
-            if (station == origin) {
-                continue;
-            }
-            /*
-             * Routing every candidate up front both supplies the length for the tiebreak and drops
-             * anything in another component, which is what a partially connected network needs.
-             * A handful of A* runs once per dwell is not worth optimising.
-             */
-            Route route = router.findRoute(origin, station);
-            if (route == null) {
-                continue;
-            }
-            double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
-            candidates.add(new Candidate(
-                    station,
-                    route,
-                    demandFor(origin, station),
-                    station.getCargoHold().getUsedUnits(),
-                    staleness,
-                    staleness > STARVATION_SECONDS));
-        }
-
-        return candidates;
+        /*
+         * Routing every candidate up front both supplies the length for the tiebreak and drops
+         * anything in another component, which is what a partially connected network needs.
+         * A handful of A* runs once per dwell is not worth optimising.
+         *
+         * Collected into an ArrayList on purpose: redispatch shuffles and sorts the result in place.
+         */
+        return stations().stream()
+                .filter(station -> station != origin)
+                .map(station -> {
+                    Route route = router.findRoute(origin, station);
+                    if (route == null) {
+                        return null; // other component, so nothing can travel there
+                    }
+                    double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
+                    return new Candidate(
+                            station,
+                            route,
+                            demandFor(origin, station),
+                            station.getCargoHold().getUsedUnits(),
+                            staleness,
+                            staleness > STARVATION_SECONDS);
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     /**
@@ -474,36 +466,25 @@ public class SimulationController {
         if (!(origin instanceof Station originStation)) {
             return 0;
         }
-        int demand = 0;
-        for (Cargo cargo : originStation.getCargoHold().getContents()) {
-            if (cargo.getDestination().equals(destination.getPos())) {
-                demand += cargo.getUnits();
-            }
-        }
-        return demand;
+        return originStation.getCargoHold().getContents().stream()
+                .filter(cargo -> cargo.getDestination().equals(destination.getPos()))
+                .collect(Collectors.summingInt(Cargo::getUnits));
     }
 
     private List<Station> stations() {
-        List<Station> stations = new ArrayList<>();
-        for (Node node : sim.getNetwork().getNodes().values()) {
-            if (node instanceof Station station) {
-                stations.add(station);
-            }
-        }
-        return stations;
+        return sim.getNetwork().getNodes().values().stream()
+                .filter(Station.class::isInstance)
+                .map(Station.class::cast)
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     /**
      * @return the stations that have at least one pathway, so are worth considering at all
      */
     private List<Station> connectedStations() {
-        List<Station> stations = new ArrayList<>();
-        for (Station station : stations()) {
-            if (!station.getConnections().isEmpty()) {
-                stations.add(station);
-            }
-        }
-        return stations;
+        return stations().stream()
+                .filter(station -> !station.getConnections().isEmpty())
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     public boolean spawnVehicle() {
