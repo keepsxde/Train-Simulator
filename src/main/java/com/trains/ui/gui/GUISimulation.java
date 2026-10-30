@@ -151,7 +151,7 @@ public class GUISimulation extends GUI {
 		 */
 		speedLabel.setText(I18N.getString("sim.label.speed", controller.getSpeedMultiplier()));
 		timeLabel.setText(I18N.getString("sim.label.time", (int) controller.getElapsedSeconds()));
-		vehicleLabel.setText(I18N.getString("sim.label.vehicles", controller.getSimulation().getVehicles().size()));
+		vehicleLabel.setText(I18N.getString("sim.label.vehicles", controller.getSimulation().vehicleCount()));
 		waitingLabel.setText(I18N.getString("sim.label.waiting", controller.getWaitingUnits()));
 		onboardLabel.setText(I18N.getString("sim.label.onboard", controller.getOnboardUnits()));
 		deliveredLabel.setText(I18N.getString("sim.label.delivered", controller.getDeliveredCount()));
