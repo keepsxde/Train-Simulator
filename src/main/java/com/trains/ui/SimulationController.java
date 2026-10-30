@@ -23,6 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class SimulationController {
@@ -90,6 +93,11 @@ public class SimulationController {
      * it lazily keeps a controller constructible on a headless machine.
      */
     private Timer timer;
+    /**
+     * Runs the simulation off the UI thread. Created in {@link #start()} for the same reason as the
+     * timer, and one thread only, so ticks can never overlap each other.
+     */
+    private ScheduledExecutorService ticker;
 
     private Runnable onFrame;
     /*
@@ -140,23 +148,39 @@ public class SimulationController {
      */
     public void start() {
         if (timer == null) {
-            timer = new Timer(FRAME_DELAY_MS, event -> pulse(System.nanoTime()));
+            timer = new Timer(FRAME_DELAY_MS, event -> {
+                if (onFrame != null) {
+                    onFrame.run(); // every frame, so the canvas still repaints while paused or resizing
+                }
+            });
         }
-        lastFrameNanos = 0;
+        if (ticker == null) {
+            ticker = Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "sim-tick");
+                thread.setDaemon(true); // a stuck tick must not keep the JVM alive after the window closes
+                return thread;
+            });
+            lastFrameNanos = 0;
+            ticker.scheduleWithFixedDelay(this::pulse, 0, FRAME_DELAY_MS, TimeUnit.MILLISECONDS);
+        }
         running = true;
         timer.start();
     }
 
     /**
-     * Stops the frame timer entirely.
+     * Stops the frame timer and the tick thread entirely.
      * <p>
-     *     Must be called when leaving the screen, otherwise the timer keeps firing after the scene
+     *     Must be called when leaving the screen, otherwise both keep running after the scene
      *     root has been swapped out.
      * </p>
      */
     public void stop() {
         if (timer != null) {
             timer.stop();
+        }
+        if (ticker != null) {
+            ticker.shutdownNow();
+            ticker = null;
         }
         running = false;
     }
@@ -265,19 +289,26 @@ public class SimulationController {
         }
     }
 
-    private void pulse(long now) {
-        if (lastFrameNanos == 0) {
-            lastFrameNanos = now; // first frame after start, no delta to act on yet
-        }
-        double frameSeconds = (now - lastFrameNanos) / 1_000_000_000.0;
-        lastFrameNanos = now;
+    /**
+     * Runs on the tick thread, not the UI thread.
+     */
+    private void pulse() {
+        try {
+            long now = System.nanoTime();
+            if (lastFrameNanos == 0) {
+                lastFrameNanos = now; // first frame after start, no delta to act on yet
+            }
+            double frameSeconds = (now - lastFrameNanos) / 1_000_000_000.0;
+            lastFrameNanos = now;
 
-        if (running) {
-            advance(Math.min(frameSeconds, MAX_FRAME_SECONDS) * speedMultiplier);
-        }
-
-        if (onFrame != null) {
-            onFrame.run(); // every pulse, so the canvas still repaints while paused or resizing
+            if (running) {
+                synchronized (sim) {
+                    advance(Math.min(frameSeconds, MAX_FRAME_SECONDS) * speedMultiplier);
+                }
+            }
+        } catch (RuntimeException e) {
+            // an exception escaping a scheduled task cancels every later run without a word
+            e.printStackTrace();
         }
     }
 
