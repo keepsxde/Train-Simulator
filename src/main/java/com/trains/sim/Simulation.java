@@ -45,6 +45,10 @@ public final class Simulation {
         vehicles.remove(vehicle);
     }
 
+    public synchronized int vehicleCount() {
+        return vehicles.size();
+    }
+
     /**
      * Advances the simulation by one tick
      * @param dt elapsed simulated time since last tick
