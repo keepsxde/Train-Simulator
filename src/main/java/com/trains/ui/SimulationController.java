@@ -211,51 +211,58 @@ public class SimulationController {
     /**
      * Spawns one passenger between two random stations that a train can actually travel between.
      * <p>
-     *     Deliberately lenient: a network with no routable pair simply produces no passengers rather
-     *     than an error, because once nodes can be added and removed from the UI a disconnected
-     *     network is a legal state. The point is only to never create a journey that cannot be
-     *     completed, since undeliverable cargo would sit on a platform forever.
+     *  A network with no routable pair produces no passengers rather
+     *  than an error, because once nodes can be added and removed from the UI a disconnected
+     *  network is a legal state. The point is only to never create a journey that cannot be
+     *  completed, since undeliverable cargo would stay on a platform forever.
      * </p>
      * <p>
-     *     Goes through the two argument {@link CargoSpawner#spawnPassenger(Station, Station)} rather
-     *     than the no argument one, which picks its own pair without checking for a route.
+     *  Goes through the two argument {@link CargoSpawner#spawnPassenger(Station, Station)} rather
+     *  than the no argument one, which picks its own pair without checking for a route.
      * </p>
      * @return true if a passenger was spawned
      */
     public boolean spawnPassenger() {
-        List<Station> stations = connectedStations();
-        if (stations.size() < 2) {
+        // called from a button as well as the tick, so it takes the same lock the tick does
+        synchronized (sim) {
+            List<Station> stations = connectedStations();
+            if (stations.size() < 2) {
+                return false;
+            }
+
+            for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+                Station origin = stations.get(random.nextInt(stations.size()));
+                Station destination = stations.get(random.nextInt(stations.size()));
+                if (origin == destination) {
+                    continue; // findRoute rejects an origin equal to its destination
+                }
+                if (router.findRoute(origin, destination) == null) {
+                    continue; // different components, so this passenger could never arrive
+                }
+                return spawner.spawnPassenger(origin, destination);
+            }
             return false;
         }
-
-        for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-            Station origin = stations.get(random.nextInt(stations.size()));
-            Station destination = stations.get(random.nextInt(stations.size()));
-            if (origin == destination) {
-                continue; // findRoute rejects an origin equal to its destination
-            }
-            if (router.findRoute(origin, destination) == null) {
-                continue; // different components, so this passenger could never arrive
-            }
-            return spawner.spawnPassenger(origin, destination);
-        }
-        return false;
     }
 
     /**
      * @return the total cargo units waiting across every station
      */
     public int getWaitingUnits() {
-        return stations().stream()
-                .collect(Collectors.summingInt(station -> station.getCargoHold().getUsedUnits()));
+        synchronized (sim) {
+            return stations().stream()
+                    .collect(Collectors.summingInt(station -> station.getCargoHold().getUsedUnits()));
+        }
     }
 
     /**
      * @return the total cargo units currently aboard vehicles
      */
     public int getOnboardUnits() {
-        return sim.getVehicles().stream()
-                .collect(Collectors.summingInt(vehicle -> vehicle.getCargoHold().getUsedUnits()));
+        synchronized (sim) {
+            return sim.getVehicles().stream()
+                    .collect(Collectors.summingInt(vehicle -> vehicle.getCargoHold().getUsedUnits()));
+        }
     }
 
     private void pulse(long now) {
@@ -276,10 +283,6 @@ public class SimulationController {
 
     /**
      * Runs whole fixed steps out of the time handed in, keeping the remainder for the next call.
-     * <p>
-     *     Package private rather than private so the loop can be driven directly, without a frame
-     *     timer and so without a display.
-     * </p>
      * @param simSeconds simulated seconds to advance by
      */
     void advance(double simSeconds) {
@@ -486,29 +489,31 @@ public class SimulationController {
     }
 
     public boolean spawnVehicle() {
-    List<Station> stations = connectedStations();
-    if (stations.size() < 2) {
-        return false;
-    }
+        synchronized (sim) {
+            List<Station> stations = connectedStations();
+            if (stations.size() < 2) {
+                return false;
+            }
 
-    for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-        Station origin = stations.get(random.nextInt(stations.size()));
-        Station destination = stations.get(random.nextInt(stations.size()));
-        if (origin == destination) {
-            continue;
+            for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+                Station origin = stations.get(random.nextInt(stations.size()));
+                Station destination = stations.get(random.nextInt(stations.size()));
+                if (origin == destination) {
+                    continue;
+                }
+                Route route = router.findRoute(origin, destination);
+                if (route == null) {
+                    continue;
+                }
+                sim.addVehicle(new Vehicle(
+                        new Itinerary(route),
+                        TRAIN_MAX_SPEED,
+                        TRAIN_ACCELERATION,
+                        CargoHold.mixed(TRAIN_CAPACITY)));
+                return true;
+            }
+            return false;
         }
-        Route route = router.findRoute(origin, destination);
-        if (route == null) {
-            continue;
-        }
-        sim.addVehicle(new Vehicle(
-                new Itinerary(route),
-                TRAIN_MAX_SPEED,
-                TRAIN_ACCELERATION,
-                CargoHold.mixed(TRAIN_CAPACITY)));
-        return true;
-    }
-    return false;
     }
 
 }
