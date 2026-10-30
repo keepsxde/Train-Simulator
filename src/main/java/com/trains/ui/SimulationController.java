@@ -92,12 +92,17 @@ public class SimulationController {
     private Timer timer;
 
     private Runnable onFrame;
-    private boolean running;
-    private double speedMultiplier = 1.0;
+    /*
+     * Read by one thread and written by another once the tick leaves the UI thread, so a plain
+     * field could be cached and never seen. Each has a single writer, which is why volatile is
+     * enough for the += updates.
+     */
+    private volatile boolean running;
+    private volatile double speedMultiplier = 1.0;
+    private volatile double elapsedSeconds;
+    private volatile int deliveredCount;
     private double accumulator;
-    private double elapsedSeconds;
     private double spawnCountdown = SPAWN_INTERVAL_SECONDS;
-    private int deliveredCount;
     private long lastFrameNanos;
 
     public SimulationController() {
