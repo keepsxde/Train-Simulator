@@ -6,6 +6,7 @@ import com.trains.network.Node;
 import com.trains.network.Station;
 import com.trains.routing.Route;
 import com.trains.routing.Router;
+import com.trains.sim.Candidate;
 import com.trains.sim.CargoSpawner;
 import com.trains.sim.Simulation;
 import com.trains.utils.GridPos;
@@ -451,19 +452,6 @@ public class SimulationController {
                     .thenComparing(Comparator.comparingInt(Candidate::pickup).reversed())
                     .thenComparing(Comparator.comparingDouble(Candidate::staleness).reversed())
                     .thenComparingDouble(candidate -> candidate.route().getTotalLength());
-
-    /**
-     * A possible next destination, with everything the ranking needs.
-     * @param station the candidate destination
-     * @param route how to get there from where the vehicle is now
-     * @param demand units waiting at the vehicle's current station bound for this candidate
-     * @param pickup units waiting at the candidate itself
-     * @param staleness simulated seconds since the candidate was last called at
-     * @param starving whether that staleness has passed {@link #STARVATION_SECONDS}
-     */
-    private record Candidate(Station station, Route route, int demand, int pickup,
-                             double staleness, boolean starving) {
-    }
 
     private List<Candidate> scoreCandidates(Node origin) {
         return stations().parallelStream()
