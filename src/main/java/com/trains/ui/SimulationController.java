@@ -77,8 +77,13 @@ public class SimulationController {
      */
     private final CargoSpawner spawner;
     private final Random random = new Random();
-    /** Decides where a vehicle goes once it has finished its route. */
-    private final DispatchStrategy dispatchStrategy = new StandardDispatch(random);
+    /**
+     * Decides where a vehicle goes once it has finished its route.
+     * <p>
+     *     Volatile because the UI thread swaps it while the tick thread reads it.
+     * </p>
+     */
+    private volatile DispatchStrategy dispatchStrategy = new StandardDispatch(random);
     /** Remaining dwell time per vehicle. Identity keyed because Vehicle has no value equality. */
     private final Map<Vehicle, Double> dwellRemaining = new IdentityHashMap<>();
     /**
@@ -219,6 +224,19 @@ public class SimulationController {
 
     public double getSpeedMultiplier() {
         return speedMultiplier;
+    }
+
+    /**
+     * Changes how vehicles pick their next destination, from the next dispatch onwards
+     * @param dispatchStrategy the rule to use
+     * @throws NullPointerException if dispatchStrategy is null
+     */
+    public void setDispatchStrategy(DispatchStrategy dispatchStrategy) {
+        this.dispatchStrategy = Objects.requireNonNull(dispatchStrategy);
+    }
+
+    public DispatchStrategy getDispatchStrategy() {
+        return dispatchStrategy;
     }
 
     /**
