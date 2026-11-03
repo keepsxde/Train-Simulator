@@ -8,7 +8,9 @@ import com.trains.routing.Route;
 import com.trains.routing.Router;
 import com.trains.sim.Candidate;
 import com.trains.sim.CargoSpawner;
+import com.trains.sim.DispatchStrategy;
 import com.trains.sim.Simulation;
+import com.trains.sim.StandardDispatch;
 import com.trains.utils.GridPos;
 import com.trains.vehicles.Vehicle;
 import com.trains.cargo.CargoHold;
@@ -16,8 +18,6 @@ import com.trains.vehicles.Itinerary;
 
 import javax.swing.Timer;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -77,6 +77,8 @@ public class SimulationController {
      */
     private final CargoSpawner spawner;
     private final Random random = new Random();
+    /** Decides where a vehicle goes once it has finished its route. */
+    private final DispatchStrategy dispatchStrategy = new StandardDispatch(random);
     /** Remaining dwell time per vehicle. Identity keyed because Vehicle has no value equality. */
     private final Map<Vehicle, Double> dwellRemaining = new IdentityHashMap<>();
     /**
@@ -429,29 +431,8 @@ public class SimulationController {
             return; // nothing reachable, so it stays put and tries again after the next dwell
         }
 
-        /*
-         * Shuffle before sorting: List.sort is stable, so without this every equal score would
-         * resolve to network insertion order and the same station would win every time.
-         */
-        Collections.shuffle(candidates, random);
-        candidates.sort(BY_PRIORITY);
-
-        vehicle.dispatch(candidates.get(0).route());
+        vehicle.dispatch(dispatchStrategy.choose(candidates).route());
     }
-
-    /**
-     * Ranks where a vehicle standing at {@code origin} should go next.
-     * <p>
-     *     A starving station beats everything, which is the fairness bound. Otherwise it is demand
-     *     first, and route length only ever separates otherwise equal candidates.
-     * </p>
-     */
-    private static final Comparator<Candidate> BY_PRIORITY =
-            Comparator.comparing(Candidate::starving).reversed()
-                    .thenComparing(Comparator.comparingInt(Candidate::demand).reversed())
-                    .thenComparing(Comparator.comparingInt(Candidate::pickup).reversed())
-                    .thenComparing(Comparator.comparingDouble(Candidate::staleness).reversed())
-                    .thenComparingDouble(candidate -> candidate.route().getTotalLength());
 
     private List<Candidate> scoreCandidates(Node origin) {
         return stations().parallelStream()
