@@ -1,5 +1,10 @@
 package com.trains.ui.gui;
 
+import com.trains.sim.DispatchStrategy;
+import com.trains.sim.LongestWaitingDispatch;
+import com.trains.sim.NearestFirstDispatch;
+import com.trains.sim.RandomDispatch;
+import com.trains.sim.StandardDispatch;
 import com.trains.ui.RandomScenario;
 import com.trains.ui.SimulationController;
 import com.trains.ui.SimulationView;
@@ -7,6 +12,9 @@ import com.trains.utils.lang.I18N;
 
 import javax.swing.*;
 import java.awt.*;
+import java.util.List;
+import java.util.Random;
+import java.util.function.Supplier;
 
 /**
  * The simulation screen.
@@ -21,9 +29,22 @@ public class GUISimulation extends GUI {
 	private static final float TITLE_SIZE = 28.0f;
 	private static final int SPEED_SCALE = 100;
 
+	private record DispatchOption(String key, Supplier<DispatchStrategy> create) {
+	}
+
+	// the first option is the controller's default, so the button starts out showing the right one
+	private static final List<DispatchOption> DISPATCH_OPTIONS = List.of(
+			new DispatchOption("sim.dispatch.standard", () -> new StandardDispatch(new Random())),
+			new DispatchOption("sim.dispatch.nearest", () -> new NearestFirstDispatch(new Random())),
+			new DispatchOption("sim.dispatch.longestWaiting", () -> new LongestWaitingDispatch(new Random())),
+			new DispatchOption("sim.dispatch.random", () -> new RandomDispatch(new Random()))
+	);
+
 	private final SimulationView view;
 	private final SimulationController controller;
 	private final JButton playPauseButton;
+	private final JButton dispatchButton;
+	private int dispatchIndex;
 	private final JLabel speedLabel;
 	private final JLabel timeLabel;
 	private final JLabel vehicleLabel;
@@ -44,6 +65,12 @@ public class GUISimulation extends GUI {
 		this.playPauseButton.addActionListener(event -> togglePlayPause());
 		bind(this::updatePlayPauseText);
 		lockButtonSize(this.playPauseButton, MAX_BUTTON_SIZE / 2);
+
+		this.dispatchButton = new JButton();
+		this.dispatchButton.setAlignmentX(Component.CENTER_ALIGNMENT);
+		this.dispatchButton.addActionListener(event -> cycleDispatchStrategy());
+		bind(this::updateDispatchText);
+		lockButtonSize(this.dispatchButton, MAX_BUTTON_SIZE);
 		this.speedLabel = createStatLabel();
 		this.timeLabel = createStatLabel();
 		this.vehicleLabel = createStatLabel();
@@ -115,6 +142,7 @@ public class GUISimulation extends GUI {
 				speedSlider,
 				createMenuButton("sim.button.spawn", controller::spawnPassenger),
 				createMenuButton("sim.button.spawnTrain", controller::spawnVehicle),
+				dispatchButton,
 				createMenuButton("sim.button.fit", view::requestFit),
 				createSectionLabel("sim.info.title"),
 				infoLabel,
@@ -151,7 +179,7 @@ public class GUISimulation extends GUI {
 		 */
 		speedLabel.setText(I18N.getString("sim.label.speed", controller.getSpeedMultiplier()));
 		timeLabel.setText(I18N.getString("sim.label.time", (int) controller.getElapsedSeconds()));
-		vehicleLabel.setText(I18N.getString("sim.label.vehicles", controller.getSimulation().getVehicles().size()));
+		vehicleLabel.setText(I18N.getString("sim.label.vehicles", controller.getSimulation().vehicleCount()));
 		waitingLabel.setText(I18N.getString("sim.label.waiting", controller.getWaitingUnits()));
 		onboardLabel.setText(I18N.getString("sim.label.onboard", controller.getOnboardUnits()));
 		deliveredLabel.setText(I18N.getString("sim.label.delivered", controller.getDeliveredCount()));
@@ -174,6 +202,17 @@ public class GUISimulation extends GUI {
 	private void updatePlayPauseText() {
 		String key = controller.isRunning() ? "sim.button.pause" : "sim.button.play";
 		playPauseButton.setText(I18N.getString(key));
+	}
+
+	private void cycleDispatchStrategy() {
+		dispatchIndex = (dispatchIndex + 1) % DISPATCH_OPTIONS.size();
+		controller.setDispatchStrategy(DISPATCH_OPTIONS.get(dispatchIndex).create().get());
+		updateDispatchText();
+	}
+
+	private void updateDispatchText() {
+		String name = I18N.getString(DISPATCH_OPTIONS.get(dispatchIndex).key());
+		dispatchButton.setText(I18N.getString("sim.button.dispatch", name));
 	}
 
 	/**

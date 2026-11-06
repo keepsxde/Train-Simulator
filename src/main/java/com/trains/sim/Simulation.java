@@ -33,19 +33,27 @@ public final class Simulation {
         return Collections.unmodifiableList(vehicles);
     }
 
-    public void addVehicle(Vehicle vehicle) {
+    /*
+     * These lock on the Simulation itself, so callers that need several steps to happen together,
+     * like iterating getVehicles(), can take the same lock with synchronized (sim).
+     */
+    public synchronized void addVehicle(Vehicle vehicle) {
         vehicles.add(vehicle);
     }
 
-    public void removeVehicle(Vehicle vehicle) {
+    public synchronized void removeVehicle(Vehicle vehicle) {
         vehicles.remove(vehicle);
+    }
+
+    public synchronized int vehicleCount() {
+        return vehicles.size();
     }
 
     /**
      * Advances the simulation by one tick
      * @param dt elapsed simulated time since last tick
      */
-    public void tick(double dt) {
+    public synchronized void tick(double dt) {
         for ( Vehicle vehicle : vehicles) {
             vehicle.update(dt);
         }

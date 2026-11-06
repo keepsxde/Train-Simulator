@@ -6,8 +6,11 @@ import com.trains.network.Node;
 import com.trains.network.Station;
 import com.trains.routing.Route;
 import com.trains.routing.Router;
+import com.trains.sim.Candidate;
 import com.trains.sim.CargoSpawner;
+import com.trains.sim.DispatchStrategy;
 import com.trains.sim.Simulation;
+import com.trains.sim.StandardDispatch;
 import com.trains.utils.GridPos;
 import com.trains.vehicles.Vehicle;
 import com.trains.cargo.CargoHold;
@@ -15,14 +18,15 @@ import com.trains.vehicles.Itinerary;
 
 import javax.swing.Timer;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class SimulationController {
@@ -73,6 +77,13 @@ public class SimulationController {
      */
     private final CargoSpawner spawner;
     private final Random random = new Random();
+    /**
+     * Decides where a vehicle goes once it has finished its route.
+     * <p>
+     *     Volatile because the UI thread swaps it while the tick thread reads it.
+     * </p>
+     */
+    private volatile DispatchStrategy dispatchStrategy = new StandardDispatch(random);
     /** Remaining dwell time per vehicle. Identity keyed because Vehicle has no value equality. */
     private final Map<Vehicle, Double> dwellRemaining = new IdentityHashMap<>();
     /**
@@ -90,14 +101,24 @@ public class SimulationController {
      * it lazily keeps a controller constructible on a headless machine.
      */
     private Timer timer;
+    /**
+     * Runs the simulation off the UI thread. Created in {@link #start()} for the same reason as the
+     * timer, and one thread only, so ticks can never overlap each other.
+     */
+    private ScheduledExecutorService ticker;
 
     private Runnable onFrame;
-    private boolean running;
-    private double speedMultiplier = 1.0;
+    /*
+     * Read by one thread and written by another once the tick leaves the UI thread, so a plain
+     * field could be cached and never seen. Each has a single writer, which is why volatile is
+     * enough for the += updates.
+     */
+    private volatile boolean running;
+    private volatile double speedMultiplier = 1.0;
+    private volatile double elapsedSeconds;
+    private volatile int deliveredCount;
     private double accumulator;
-    private double elapsedSeconds;
     private double spawnCountdown = SPAWN_INTERVAL_SECONDS;
-    private int deliveredCount;
     private long lastFrameNanos;
 
     public SimulationController() {
@@ -135,23 +156,39 @@ public class SimulationController {
      */
     public void start() {
         if (timer == null) {
-            timer = new Timer(FRAME_DELAY_MS, event -> pulse(System.nanoTime()));
+            timer = new Timer(FRAME_DELAY_MS, event -> {
+                if (onFrame != null) {
+                    onFrame.run(); // every frame, so the canvas still repaints while paused or resizing
+                }
+            });
         }
-        lastFrameNanos = 0;
+        if (ticker == null) {
+            ticker = Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "sim-tick");
+                thread.setDaemon(true); // a stuck tick must not keep the JVM alive after the window closes
+                return thread;
+            });
+            lastFrameNanos = 0;
+            ticker.scheduleWithFixedDelay(this::pulse, 0, FRAME_DELAY_MS, TimeUnit.MILLISECONDS);
+        }
         running = true;
         timer.start();
     }
 
     /**
-     * Stops the frame timer entirely.
+     * Stops the frame timer and the tick thread entirely.
      * <p>
-     *     Must be called when leaving the screen, otherwise the timer keeps firing after the scene
+     *     Must be called when leaving the screen, otherwise both keep running after the scene
      *     root has been swapped out.
      * </p>
      */
     public void stop() {
         if (timer != null) {
             timer.stop();
+        }
+        if (ticker != null) {
+            ticker.shutdownNow();
+            ticker = null;
         }
         running = false;
     }
@@ -190,6 +227,19 @@ public class SimulationController {
     }
 
     /**
+     * Changes how vehicles pick their next destination, from the next dispatch onwards
+     * @param dispatchStrategy the rule to use
+     * @throws NullPointerException if dispatchStrategy is null
+     */
+    public void setDispatchStrategy(DispatchStrategy dispatchStrategy) {
+        this.dispatchStrategy = Objects.requireNonNull(dispatchStrategy);
+    }
+
+    public DispatchStrategy getDispatchStrategy() {
+        return dispatchStrategy;
+    }
+
+    /**
      * @return simulated seconds run so far, not counting paused time
      */
     public double getElapsedSeconds() {
@@ -206,83 +256,85 @@ public class SimulationController {
     /**
      * Spawns one passenger between two random stations that a train can actually travel between.
      * <p>
-     *     Deliberately lenient: a network with no routable pair simply produces no passengers rather
-     *     than an error, because once nodes can be added and removed from the UI a disconnected
-     *     network is a legal state. The point is only to never create a journey that cannot be
-     *     completed, since undeliverable cargo would sit on a platform forever.
+     *  A network with no routable pair produces no passengers rather
+     *  than an error, because once nodes can be added and removed from the UI a disconnected
+     *  network is a legal state. The point is only to never create a journey that cannot be
+     *  completed, since undeliverable cargo would stay on a platform forever.
      * </p>
      * <p>
-     *     Goes through the two argument {@link CargoSpawner#spawnPassenger(Station, Station)} rather
-     *     than the no argument one, which picks its own pair without checking for a route.
+     *  Goes through the two argument {@link CargoSpawner#spawnPassenger(Station, Station)} rather
+     *  than the no argument one, which picks its own pair without checking for a route.
      * </p>
      * @return true if a passenger was spawned
      */
     public boolean spawnPassenger() {
-        List<Station> stations = connectedStations();
-        if (stations.size() < 2) {
+        // called from a button as well as the tick, so it takes the same lock the tick does
+        synchronized (sim) {
+            List<Station> stations = connectedStations();
+            if (stations.size() < 2) {
+                return false;
+            }
+
+            for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+                Station origin = stations.get(random.nextInt(stations.size()));
+                Station destination = stations.get(random.nextInt(stations.size()));
+                if (origin == destination) {
+                    continue; // findRoute rejects an origin equal to its destination
+                }
+                if (router.findRoute(origin, destination) == null) {
+                    continue; // different components, so this passenger could never arrive
+                }
+                return spawner.spawnPassenger(origin, destination);
+            }
             return false;
         }
-
-        for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-            Station origin = stations.get(random.nextInt(stations.size()));
-            Station destination = stations.get(random.nextInt(stations.size()));
-            if (origin == destination) {
-                continue; // findRoute rejects an origin equal to its destination
-            }
-            if (router.findRoute(origin, destination) == null) {
-                continue; // different components, so this passenger could never arrive
-            }
-            return spawner.spawnPassenger(origin, destination);
-        }
-        return false;
     }
 
     /**
      * @return the total cargo units waiting across every station
      */
     public int getWaitingUnits() {
-        int waiting = 0;
-        for (Node node : sim.getNetwork().getNodes().values()) {
-            if (node instanceof Station station) {
-                waiting += station.getCargoHold().getUsedUnits();
-            }
+        synchronized (sim) {
+            return stations().stream()
+                    .collect(Collectors.summingInt(station -> station.getCargoHold().getUsedUnits()));
         }
-        return waiting;
     }
 
     /**
      * @return the total cargo units currently aboard vehicles
      */
     public int getOnboardUnits() {
-        int onboard = 0;
-        for (Vehicle vehicle : sim.getVehicles()) {
-            onboard += vehicle.getCargoHold().getUsedUnits();
+        synchronized (sim) {
+            return sim.getVehicles().stream()
+                    .collect(Collectors.summingInt(vehicle -> vehicle.getCargoHold().getUsedUnits()));
         }
-        return onboard;
     }
 
-    private void pulse(long now) {
-        if (lastFrameNanos == 0) {
-            lastFrameNanos = now; // first frame after start, no delta to act on yet
-        }
-        double frameSeconds = (now - lastFrameNanos) / 1_000_000_000.0;
-        lastFrameNanos = now;
+    /**
+     * Runs on the tick thread, not the UI thread.
+     */
+    private void pulse() {
+        try {
+            long now = System.nanoTime();
+            if (lastFrameNanos == 0) {
+                lastFrameNanos = now; // first frame after start, no delta to act on yet
+            }
+            double frameSeconds = (now - lastFrameNanos) / 1_000_000_000.0;
+            lastFrameNanos = now;
 
-        if (running) {
-            advance(Math.min(frameSeconds, MAX_FRAME_SECONDS) * speedMultiplier);
-        }
-
-        if (onFrame != null) {
-            onFrame.run(); // every pulse, so the canvas still repaints while paused or resizing
+            if (running) {
+                synchronized (sim) {
+                    advance(Math.min(frameSeconds, MAX_FRAME_SECONDS) * speedMultiplier);
+                }
+            }
+        } catch (RuntimeException e) {
+            // an exception escaping a scheduled task cancels every later run without a word
+            e.printStackTrace();
         }
     }
 
     /**
      * Runs whole fixed steps out of the time handed in, keeping the remainder for the next call.
-     * <p>
-     *     Package private rather than private so the loop can be driven directly, without a frame
-     *     timer and so without a display.
-     * </p>
      * @param simSeconds simulated seconds to advance by
      */
     void advance(double simSeconds) {
@@ -397,45 +449,11 @@ public class SimulationController {
             return; // nothing reachable, so it stays put and tries again after the next dwell
         }
 
-        /*
-         * Shuffle before sorting: List.sort is stable, so without this every equal score would
-         * resolve to network insertion order and the same station would win every time.
-         */
-        Collections.shuffle(candidates, random);
-        candidates.sort(BY_PRIORITY);
-
-        vehicle.dispatch(candidates.get(0).route());
-    }
-
-    /**
-     * Ranks where a vehicle standing at {@code origin} should go next.
-     * <p>
-     *     A starving station beats everything, which is the fairness bound. Otherwise it is demand
-     *     first, and route length only ever separates otherwise equal candidates.
-     * </p>
-     */
-    private static final Comparator<Candidate> BY_PRIORITY =
-            Comparator.comparing(Candidate::starving).reversed()
-                    .thenComparing(Comparator.comparingInt(Candidate::demand).reversed())
-                    .thenComparing(Comparator.comparingInt(Candidate::pickup).reversed())
-                    .thenComparing(Comparator.comparingDouble(Candidate::staleness).reversed())
-                    .thenComparingDouble(candidate -> candidate.route().getTotalLength());
-
-    /**
-     * A possible next destination, with everything the ranking needs.
-     * @param station the candidate destination
-     * @param route how to get there from where the vehicle is now
-     * @param demand units waiting at the vehicle's current station bound for this candidate
-     * @param pickup units waiting at the candidate itself
-     * @param staleness simulated seconds since the candidate was last called at
-     * @param starving whether that staleness has passed {@link #STARVATION_SECONDS}
-     */
-    private record Candidate(Station station, Route route, int demand, int pickup,
-                             double staleness, boolean starving) {
+        vehicle.dispatch(dispatchStrategy.choose(candidates).route());
     }
 
     private List<Candidate> scoreCandidates(Node origin) {
-        return stations().stream()
+        return stations().parallelStream()
                 .filter(station -> station != origin)
                 .map(station -> {
                     Route route = router.findRoute(origin, station);
@@ -443,14 +461,13 @@ public class SimulationController {
                         return null;
                     }
                     double staleness = elapsedSeconds - lastServed.getOrDefault(station.getPos(), 0.0);
-
                     return new Candidate(
-                        station,
-                        route,
-                        demandFor(origin, station),
-                        station.getCargoHold().getUsedUnits(),
-                        staleness,
-                        staleness > STARVATION_SECONDS);
+                            station,
+                            route,
+                            demandFor(origin, station),
+                            station.getCargoHold().getUsedUnits(),
+                            staleness,
+                            staleness > STARVATION_SECONDS);
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(ArrayList::new));
@@ -470,20 +487,16 @@ public class SimulationController {
         if (!(origin instanceof Station originStation)) {
             return 0;
         }
-        int demand = 0;
-        for (Cargo cargo : originStation.getCargoHold().getContents()) {
-            if (cargo.getDestination().equals(destination.getPos())) {
-                demand += cargo.getUnits();
-            }
-        }
-        return demand;
+        return originStation.getCargoHold().getContents().stream()
+                .filter(cargo -> cargo.getDestination().equals(destination.getPos()))
+                .collect(Collectors.summingInt(Cargo::getUnits));
     }
 
     private List<Station> stations() {
         return sim.getNetwork().getNodes().values().stream()
-                    .filter(Station.class::isInstance)
-                    .map(Station.class::cast)
-                    .collect(Collectors.toCollection(ArrayList::new));
+                .filter(Station.class::isInstance)
+                .map(Station.class::cast)
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     /**
@@ -496,29 +509,31 @@ public class SimulationController {
     }
 
     public boolean spawnVehicle() {
-    List<Station> stations = connectedStations();
-    if (stations.size() < 2) {
-        return false;
-    }
+        synchronized (sim) {
+            List<Station> stations = connectedStations();
+            if (stations.size() < 2) {
+                return false;
+            }
 
-    for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-        Station origin = stations.get(random.nextInt(stations.size()));
-        Station destination = stations.get(random.nextInt(stations.size()));
-        if (origin == destination) {
-            continue;
+            for (int attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+                Station origin = stations.get(random.nextInt(stations.size()));
+                Station destination = stations.get(random.nextInt(stations.size()));
+                if (origin == destination) {
+                    continue;
+                }
+                Route route = router.findRoute(origin, destination);
+                if (route == null) {
+                    continue;
+                }
+                sim.addVehicle(new Vehicle(
+                        new Itinerary(route),
+                        TRAIN_MAX_SPEED,
+                        TRAIN_ACCELERATION,
+                        CargoHold.mixed(TRAIN_CAPACITY)));
+                return true;
+            }
+            return false;
         }
-        Route route = router.findRoute(origin, destination);
-        if (route == null) {
-            continue;
-        }
-        sim.addVehicle(new Vehicle(
-                new Itinerary(route),
-                TRAIN_MAX_SPEED,
-                TRAIN_ACCELERATION,
-                CargoHold.mixed(TRAIN_CAPACITY)));
-        return true;
-    }
-    return false;
     }
 
 }

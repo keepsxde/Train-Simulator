@@ -226,10 +226,18 @@ public final class SimulationView extends JPanel {
 
 		drawGrid(gc, width, height);
 		drawPathways(gc, network);
-		drawNodes(gc, network);
 
-		for (Vehicle vehicle : simulation.getVehicles()) {
-			drawVehicle(gc, vehicle);
+		/*
+		 * Painting happens on the UI thread after render() returns, so the lock has to be taken
+		 * here rather than in render. Stations are included because the tick changes their cargo,
+		 * the pathways are not since the network itself is not changed while the simulation runs.
+		 */
+		synchronized (simulation) {
+			drawNodes(gc, network);
+
+			for (Vehicle vehicle : simulation.getVehicles()) {
+				drawVehicle(gc, vehicle);
+			}
 		}
 
 		gc.dispose();
@@ -364,11 +372,13 @@ public final class SimulationView extends JPanel {
 	/** Do not call this method directly */
 	private Object pickObject(double screenX, double screenY) {
 		if (simulation == null) { return null; }
-		for (Vehicle vehicle : simulation.getVehicles()) {
-			Point2D pos = vehicle.getPos();
-			double half = Math.max(8.0, Math.max(14.0, scale * 2.5) / 2);
-			if (isWithinObjectHitbox(screenX, screenY, toScreenX(pos.x), toScreenY(pos.y), half)) {
-				return vehicle;
+		synchronized (simulation) {
+			for (Vehicle vehicle : simulation.getVehicles()) {
+				Point2D pos = vehicle.getPos();
+				double half = Math.max(8.0, Math.max(14.0, scale * 2.5) / 2);
+				if (isWithinObjectHitbox(screenX, screenY, toScreenX(pos.x), toScreenY(pos.y), half)) {
+					return vehicle;
+				}
 			}
 		}
 
@@ -390,20 +400,24 @@ public final class SimulationView extends JPanel {
 	public String describeSelectedObject(Object entity) {
 		switch (entity) {
 			case Vehicle vehicle -> {
-				CargoHold hold = vehicle.getCargoHold();
-				String routeStatus = vehicle.isRouteComplete()
-						? I18N.getString("sim.info.train.pendingDispatch")
-						: I18N.getString("sim.info.train.nextStop", label(vehicle.getTargetNode()));
-				return I18N.getString("sim.info.train")
-						+ "\n" + I18N.getString("sim.info.train.cargo", hold.getUsedUnits(), hold.getCapacity())
-						+ "\n" + I18N.getString("sim.info.train.speed", vehicle.getSpeed())
-						+ "\n" + routeStatus;
+				synchronized (simulation) {
+					CargoHold hold = vehicle.getCargoHold();
+					String routeStatus = vehicle.isRouteComplete()
+							? I18N.getString("sim.info.train.pendingDispatch")
+							: I18N.getString("sim.info.train.nextStop", label(vehicle.getTargetNode()));
+					return I18N.getString("sim.info.train")
+							+ "\n" + I18N.getString("sim.info.train.cargo", hold.getUsedUnits(), hold.getCapacity())
+							+ "\n" + I18N.getString("sim.info.train.speed", vehicle.getSpeed())
+							+ "\n" + routeStatus;
+				}
 			}
 			case Station station -> {
-				CargoHold hold = station.getCargoHold();
-				return label(station)
-						+ "\n" + I18N.getString("sim.info.station.passengers.waiting", hold.getUsedUnits(), hold.getCapacity())
-						+ "\n" + I18N.getString("sim.info.tracks.connections", station.getConnections().size());
+				synchronized (simulation) {
+					CargoHold hold = station.getCargoHold();
+					return label(station)
+							+ "\n" + I18N.getString("sim.info.station.passengers.waiting", hold.getUsedUnits(), hold.getCapacity())
+							+ "\n" + I18N.getString("sim.info.tracks.connections", station.getConnections().size());
+				}
 			}
 			case Node node -> {
 				return label(node)
